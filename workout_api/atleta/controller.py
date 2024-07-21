@@ -1,11 +1,19 @@
 from datetime import datetime
 from uuid import uuid4
 from fastapi import APIRouter, Body, HTTPException, status
+from fastapi.params import Query
+from fastapi_pagination import LimitOffsetPage, paginate
 from pydantic import UUID4
 from sqlalchemy.future import select
+from sqlalchemy.exc import IntegrityError
 
 from workout_api.atleta.models import AtletaModel
-from workout_api.atleta.schemas import AtletaIn, AtletaOut, AtletaUpdate
+from workout_api.atleta.schemas import (
+    AtletaIn,
+    AtletaOutReduzido,
+    AtletaUpdate,
+    AtletaOut,
+)
 from workout_api.categorias.models import CategoriaModel
 from workout_api.centro_treinamento.models import CentroTreinamentoModel
 from workout_api.contrib.dependecies import DatabaseDependency
@@ -67,6 +75,11 @@ async def post(db_session: DatabaseDependency, atleta_in: AtletaIn = Body(...)):
 
         db_session.add(atleta_model)
         await db_session.commit()
+    except IntegrityError:
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            detail=f"Já existe um atleta cadastrado com o cpf: {atleta_in.cpf}",
+        )
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -78,16 +91,47 @@ async def post(db_session: DatabaseDependency, atleta_in: AtletaIn = Body(...)):
 
 @router.get(
     "/",
-    summary="Consultar todos os Atletas",
+    summary="Consultar lista dos Atletas",
     status_code=status.HTTP_200_OK,
-    response_model=list[AtletaOut],
+    response_model=LimitOffsetPage[AtletaOutReduzido],
 )
-async def query(db_session: DatabaseDependency) -> list[AtletaOut]:
-    atletas: list[AtletaOut] = (
-        (await db_session.execute(select(AtletaModel))).scalars().all()
+async def query(
+    db_session: DatabaseDependency,
+    nome: str = Query(None, description="Digite um nome para filtro"),
+    cpf: str = Query(None, description="Digite um cpf para filtro"),
+) -> LimitOffsetPage[AtletaOutReduzido]:
+    query = (
+        select(
+            AtletaModel.id,
+            AtletaModel.created_at,
+            AtletaModel.nome,
+            AtletaModel.cpf,
+            CategoriaModel.nome.label("categoria_nome"),
+            CentroTreinamentoModel.nome.label("ct_nome"),
+        )
+        .outerjoin(AtletaModel.categoria)
+        .outerjoin(AtletaModel.centro_treinamento)
     )
 
-    return [AtletaOut.model_validate(atleta) for atleta in atletas]
+    if nome:
+        query = query.filter(AtletaModel.nome.ilike(f"%{nome}%"))
+    if cpf:
+        query = query.filter(AtletaModel.cpf == cpf)
+
+    atletas: list[AtletaOutReduzido] = (await db_session.execute(query)).all()
+    items = []
+    for atleta_data in atletas:
+        items.append(
+            {
+                "id": atleta_data.id,
+                "created_at": atleta_data.created_at.isoformat(),
+                "nome": atleta_data.nome,
+                "cpf": atleta_data.cpf,
+                "categoria": {"nome": atleta_data.categoria_nome},
+                "centro_treinamento": {"nome": atleta_data.ct_nome},
+            }
+        )
+    return paginate(items)
 
 
 @router.get(

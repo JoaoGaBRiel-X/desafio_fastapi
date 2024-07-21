@@ -11,6 +11,7 @@ pydantic = "*"
 alembic = "*"
 asyncpg = "*"
 pydantic-settings = "*"
+fastapi-pagination = "*"
 
 [dev-packages]
 
